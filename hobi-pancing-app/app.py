@@ -3,14 +3,27 @@ import pandas as pd
 import plotly.express as px
 from datetime import datetime, timedelta
 from streamlit_gsheets import GSheetsConnection
+import base64
 
 st.set_page_config(page_title="Toko Hobi Pancing", page_icon="🎣", layout="wide")
 
-# Custom CSS Tampilan
+# Custom CSS Tampilan & Kalkulator Android
 st.markdown("""
     <style>
     .main { background-color: #f8f9fa; }
     .stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+    /* Styling Kalkulator Android */
+    .calc-screen {
+        background-color: #222222;
+        color: #00ffcc;
+        font-size: 28px;
+        font-family: monospace;
+        text-align: right;
+        padding: 10px 15px;
+        border-radius: 8px;
+        margin-bottom: 10px;
+        min-height: 50px;
+    }
     </style>
 """, unsafe_allow_html=True)
 
@@ -18,19 +31,24 @@ st.markdown("""
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def load_sheet(worksheet_name):
-    """Membaca data dari tab Google Sheets secara realtime"""
     return conn.read(worksheet=worksheet_name, ttl=0)
 
 def append_to_sheet(worksheet_name, new_data_dict):
-    """Menambahkan baris data baru ke tab Google Sheets"""
     existing_df = load_sheet(worksheet_name)
     new_df = pd.DataFrame([new_data_dict])
     updated_df = pd.concat([existing_df, new_df], ignore_index=True)
     conn.update(worksheet=worksheet_name, data=updated_df)
 
 def update_sheet_full(worksheet_name, new_df):
-    """Menimpa seluruh data di tab Google Sheets"""
     conn.update(worksheet=worksheet_name, data=new_df)
+
+# Helper Convert Upload Gambar ke Base64 (Simpan ke Sheets)
+def image_to_base64(uploaded_file):
+    if uploaded_file is not None:
+        bytes_data = uploaded_file.getvalue()
+        base64_str = base64.b64encode(bytes_data).decode('utf-8')
+        return f"data:image/png;base64,{base64_str}"
+    return ""
 
 # Logika Waktu Reset Jam 02:00 Pagi
 def get_tanggal_operasional():
@@ -91,17 +109,17 @@ else:
     ])
 
 # ==========================================
-# 1. CARI HARGA & KALKULATOR
+# 1. CARI HARGA & KALKULATOR ANDROID
 # ==========================================
 if menu == "🔍 Cari Harga & Kalkulator":
     st.title("🔍 Pencarian Harga & Kalkulator Kasir")
-    col_left, col_right = st.columns([2, 1])
+    col_left, col_right = st.columns([1.8, 1.2])
     
     with col_left:
         st.subheader("Daftar Harga Barang")
         try:
             df_b = load_sheet("barang_utama")
-        except Exception as e:
+        except:
             df_b = pd.DataFrame(columns=["nama_barang", "kategori_satuan", "harga_modal", "harga_jual", "url_foto"])
 
         search = st.text_input("🔍 Ketik Nama Barang / Pakan...")
@@ -119,7 +137,7 @@ if menu == "🔍 Cari Harga & Kalkulator":
                 cols_to_show = [c for c in ['nama_barang', 'kategori_satuan', 'harga_modal', 'harga_jual'] if c in df_filtered.columns]
                 st.dataframe(df_filtered[cols_to_show], use_container_width=True, hide_index=True)
             
-            # Preview Foto Barang
+            # Preview Foto Barang (Upload Langsung)
             st.markdown("---")
             st.subheader("🖼️ Preview Foto Produk")
             items = df_filtered['nama_barang'].dropna().tolist() if not df_filtered.empty else []
@@ -129,67 +147,112 @@ if menu == "🔍 Cari Harga & Kalkulator":
                 url_foto = item_data.get('url_foto', '')
                 
                 if pd.notna(url_foto) and str(url_foto).strip() != '':
-                    st.image(str(url_foto), caption=selected_item, width=250)
+                    if str(url_foto).startswith("data:image"):
+                        st.image(str(url_foto), caption=selected_item, width=280)
+                    else:
+                        st.image(str(url_foto), caption=selected_item, width=280)
                 else:
-                    st.image(f"https://source.unsplash.com/300x200/?fishing,{selected_item.replace(' ', '')}", caption=f"Foto Visual: {selected_item}", width=250)
+                    st.info("Barang ini belum ada fotonya. Admin bisa upload file foto di menu Master Harga.")
         else:
             st.info("Data barang masih kosong di Google Sheets.")
 
+    # --- KALKULATOR HP ANDROID ---
     with col_right:
-        st.subheader("🧮 Kalkulator Cepat")
-        st.write("Hitung total belanjaan pembeli:")
-        val1 = st.number_input("Item 1 (Rp)", min_value=0, step=500)
-        val2 = st.number_input("Item 2 (Rp)", min_value=0, step=500)
-        val3 = st.number_input("Item 3 (Rp)", min_value=0, step=500)
-        val4 = st.number_input("Item 4 (Rp)", min_value=0, step=500)
-        val5 = st.number_input("Item 5 (Rp)", min_value=0, step=500)
-        
-        total_kalkulator = val1 + val2 + val3 + val4 + val5
-        st.markdown(f"### **Total: Rp {total_kalkulator:,.0f}**")
-        
-        bayar = st.number_input("Uang Dibayar (Rp)", min_value=0, step=1000)
-        if bayar > 0:
-            kembalian = bayar - total_kalkulator
-            if kembalian >= 0:
-                st.success(f"Kembalian: Rp {kembalian:,.0f}")
+        st.subheader("📱 Kalkulator Kasir Android")
+        if 'calc_expr' not in st.session_state:
+            st.session_state['calc_expr'] = "0"
+
+        def press(val):
+            if st.session_state['calc_expr'] == "0" or st.session_state['calc_expr'] == "Error":
+                st.session_state['calc_expr'] = str(val)
             else:
-                st.error(f"Uang Kurang: Rp {abs(kembalian):,.0f}")
+                st.session_state['calc_expr'] += str(val)
+
+        def clear():
+            st.session_state['calc_expr'] = "0"
+
+        def evaluate():
+            try:
+                # Ganti simbol visual ke operator python
+                expr = st.session_state['calc_expr'].replace('×', '*').replace('÷', '/')
+                res = eval(expr)
+                st.session_state['calc_expr'] = str(int(res) if isinstance(res, float) and res.is_integer() else res)
+            except:
+                st.session_state['calc_expr'] = "Error"
+
+        # Layar Kalkulator
+        st.markdown(f"<div class='calc-screen'>{st.session_state['calc_expr']}</div>", unsafe_allow_html=True)
+
+        # Keypad Grid
+        k1, k2, k3, k4 = st.columns(4)
+        if k1.button("C", use_container_width=True): clear(); st.rerun()
+        if k2.button("÷", use_container_width=True): press("÷"); st.rerun()
+        if k3.button("×", use_container_width=True): press("×"); st.rerun()
+        if k4.button("-", use_container_width=True): press("-"); st.rerun()
+
+        b7, b8, b9, b_add = st.columns(4)
+        if b7.button("7", use_container_width=True): press("7"); st.rerun()
+        if b8.button("8", use_container_width=True): press("8"); st.rerun()
+        if b9.button("9", use_container_width=True): press("9"); st.rerun()
+        if b_add.button("+", use_container_width=True): press("+"); st.rerun()
+
+        b4, b5, b6, b_eq = st.columns(4)
+        if b4.button("4", use_container_width=True): press("4"); st.rerun()
+        if b5.button("5", use_container_width=True): press("5"); st.rerun()
+        if b6.button("6", use_container_width=True): press("6"); st.rerun()
+        if b_eq.button("=", use_container_width=True): evaluate(); st.rerun()
+
+        b1, b2, b3, b0 = st.columns(4)
+        if b1.button("1", use_container_width=True): press("1"); st.rerun()
+        if b2.button("2", use_container_width=True): press("2"); st.rerun()
+        if b3.button("3", use_container_width=True): press("3"); st.rerun()
+        if b0.button("0", use_container_width=True): press("0"); st.rerun()
 
 # ==========================================
 # 2. MASTER HARGA & MODAL (ADMIN)
 # ==========================================
 elif menu == "💵 Master Harga & Modal":
     st.title("💵 Pengaturan Master Harga & Modal")
-    col1, col2 = st.columns([1, 1])
     
-    with col1:
-        st.subheader("➕ Tambah / Update Barang ke Google Sheets")
+    t1, t2 = st.tabs(["📋 Upload Foto / Input Satuan", "📋 Copy-Paste Massal dari Sheets"])
+    
+    with t1:
+        st.subheader("➕ Tambah / Update Barang Satuan (Upload Gambar)")
         with st.form("form_barang", clear_on_submit=True):
             nama = st.text_input("Nama Barang / Pakan")
             satuan = st.selectbox("Kategori Satuan", ["Pcs", "Per Kg", "Per Ons", "Pack / Bungkus", "Lainnya"])
             modal = st.number_input("Harga Modal / HPP (Rp)", min_value=0, step=500)
             jual = st.number_input("Harga Jual (Rp)", min_value=0, step=500)
-            url = st.text_input("URL Link Foto Produk (Opsional)")
+            img_file = st.file_uploader("Upload File Foto Produk (JPG/PNG)", type=['png', 'jpg', 'jpeg'])
             
-            if st.form_submit_button("Simpan ke Google Sheets"):
+            if st.form_submit_button("Simpan Barang"):
+                base64_img = image_to_base64(img_file)
                 df_b = load_sheet("barang_utama")
                 if not df_b.empty and nama in df_b['nama_barang'].values:
-                    df_b.loc[df_b['nama_barang'] == nama, ['kategori_satuan', 'harga_modal', 'harga_jual', 'url_foto']] = [satuan, modal, jual, url]
+                    df_b.loc[df_b['nama_barang'] == nama, ['kategori_satuan', 'harga_modal', 'harga_jual', 'url_foto']] = [satuan, modal, jual, base64_img]
                     update_sheet_full("barang_utama", df_b)
                     st.success(f"Data **{nama}** berhasil diperbarui di Google Sheets!")
                 else:
-                    new_row = {"nama_barang": nama, "kategori_satuan": satuan, "harga_modal": modal, "harga_jual": jual, "url_foto": url}
+                    new_row = {"nama_barang": nama, "kategori_satuan": satuan, "harga_modal": modal, "harga_jual": jual, "url_foto": base64_img}
                     append_to_sheet("barang_utama", new_row)
                     st.success(f"Barang **{nama}** berhasil disimpan ke Google Sheets!")
 
-    with col2:
-        st.subheader("🧮 Kalkulator Margin")
-        m_awal = st.number_input("Modal Barang (Rp)", min_value=1, step=500, key="calc_m")
-        j_awal = st.number_input("Rencana Harga Jual (Rp)", min_value=1, step=500, key="calc_j")
-        if j_awal > m_awal:
-            profit = j_awal - m_awal
-            margin = (profit / j_awal) * 100
-            st.metric("Estimasi Profit/Pcs", f"Rp {profit:,.0f}", f"{margin:.1f}% Margin")
+    with t2:
+        st.subheader("📋 Input Massal (Copy-Paste Langsung dari Excel / Google Sheets)")
+        st.write("Copy tabel kamu dari Google Sheets, lalu Paste (`Ctrl + V`) ke tabel interaktif di bawah ini:")
+        
+        df_template = pd.DataFrame(columns=["nama_barang", "kategori_satuan", "harga_modal", "harga_jual"])
+        edited_df = st.data_editor(df_template, num_rows="dynamic", use_container_width=True)
+        
+        if st.button("Simpan Semua Baris ke Google Sheets"):
+            if not edited_df.empty:
+                df_b_exist = load_sheet("barang_utama")
+                edited_df['url_foto'] = "" # default kosong
+                
+                # Gabungkan data lama dan baru
+                df_final = pd.concat([df_b_exist, edited_df], ignore_index=True).drop_duplicates(subset=['nama_barang'], keep='last')
+                update_sheet_full("barang_utama", df_final)
+                st.success("✅ Semua data barang berhasil di-import massal ke Google Sheets!")
 
 # ==========================================
 # 3. PANDUAN KEMAS BARANG
